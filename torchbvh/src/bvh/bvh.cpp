@@ -1,5 +1,6 @@
 #include "bvh/bvh.h"
 
+#include <cstring>
 #include <stdexcept>
 #include <vector>
 
@@ -11,6 +12,13 @@ torch::Tensor to_device(const torch::Tensor& cpu_tensor, const torch::Device& de
     return cpu_tensor;
   }
   return cpu_tensor.to(device, cpu_tensor.scalar_type(), false, true);
+}
+
+float bitcast_i32_to_f32(int32_t v) {
+  float out = 0.0f;
+  static_assert(sizeof(out) == sizeof(v), "bitcast size mismatch");
+  std::memcpy(&out, &v, sizeof(out));
+  return out;
 }
 }  // namespace
 
@@ -49,23 +57,19 @@ void THBVH::upload(torch::Device device) {
   }
 
   const int64_t node_count = static_cast<int64_t>(m_flat_nodes.size());
-  std::vector<float> node_min(static_cast<size_t>(node_count * 3));
-  std::vector<float> node_max(static_cast<size_t>(node_count * 3));
-  std::vector<int32_t> node_left(static_cast<size_t>(node_count));
-  std::vector<int32_t> node_right(static_cast<size_t>(node_count));
-  std::vector<int32_t> node_child_count(static_cast<size_t>(node_count));
+  std::vector<float> node_lower(static_cast<size_t>(node_count * 4));
+  std::vector<float> node_upper(static_cast<size_t>(node_count * 4));
 
   for (int64_t i = 0; i < node_count; ++i) {
     const FlattenedNode4& node = m_flat_nodes[static_cast<size_t>(i)];
-    node_min[static_cast<size_t>(i * 3 + 0)] = static_cast<float>(node.m_min.x());
-    node_min[static_cast<size_t>(i * 3 + 1)] = static_cast<float>(node.m_min.y());
-    node_min[static_cast<size_t>(i * 3 + 2)] = static_cast<float>(node.m_min.z());
-    node_max[static_cast<size_t>(i * 3 + 0)] = static_cast<float>(node.m_max.x());
-    node_max[static_cast<size_t>(i * 3 + 1)] = static_cast<float>(node.m_max.y());
-    node_max[static_cast<size_t>(i * 3 + 2)] = static_cast<float>(node.m_max.z());
-    node_left[static_cast<size_t>(i)] = node.m_left;
-    node_right[static_cast<size_t>(i)] = node.m_right;
-    node_child_count[static_cast<size_t>(i)] = node.m_child_count;
+    node_lower[static_cast<size_t>(i * 4 + 0)] = static_cast<float>(node.m_min.x());
+    node_lower[static_cast<size_t>(i * 4 + 1)] = static_cast<float>(node.m_min.y());
+    node_lower[static_cast<size_t>(i * 4 + 2)] = static_cast<float>(node.m_min.z());
+    node_lower[static_cast<size_t>(i * 4 + 3)] = bitcast_i32_to_f32(node.m_left);
+    node_upper[static_cast<size_t>(i * 4 + 0)] = static_cast<float>(node.m_max.x());
+    node_upper[static_cast<size_t>(i * 4 + 1)] = static_cast<float>(node.m_max.y());
+    node_upper[static_cast<size_t>(i * 4 + 2)] = static_cast<float>(node.m_max.z());
+    node_upper[static_cast<size_t>(i * 4 + 3)] = bitcast_i32_to_f32(node.m_right);
   }
 
   std::vector<int32_t> primitive_indices(m_primitive_indices.size());
@@ -92,15 +96,10 @@ void THBVH::upload(torch::Device device) {
   auto f32 = torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCPU);
   auto i32 = torch::TensorOptions().dtype(torch::kInt32).device(torch::kCPU);
 
-  m_node_min_tensor =
-      torch::from_blob(node_min.data(), {node_count, 3}, f32).clone().contiguous();
-  m_node_max_tensor =
-      torch::from_blob(node_max.data(), {node_count, 3}, f32).clone().contiguous();
-  m_node_left_tensor = torch::from_blob(node_left.data(), {node_count}, i32).clone().contiguous();
-  m_node_right_tensor =
-      torch::from_blob(node_right.data(), {node_count}, i32).clone().contiguous();
-  m_node_child_count_tensor =
-      torch::from_blob(node_child_count.data(), {node_count}, i32).clone().contiguous();
+  m_node_lower_tensor =
+      torch::from_blob(node_lower.data(), {node_count, 4}, f32).clone().contiguous();
+  m_node_upper_tensor =
+      torch::from_blob(node_upper.data(), {node_count, 4}, f32).clone().contiguous();
 
   m_primitive_indices_tensor = torch::from_blob(
                                    primitive_indices.data(),
@@ -112,11 +111,8 @@ void THBVH::upload(torch::Device device) {
   m_vertices_tensor =
       torch::from_blob(vertices_data.data(), {vertex_count, 3}, f32).clone().contiguous();
 
-  m_node_min_tensor = to_device(m_node_min_tensor, device);
-  m_node_max_tensor = to_device(m_node_max_tensor, device);
-  m_node_left_tensor = to_device(m_node_left_tensor, device);
-  m_node_right_tensor = to_device(m_node_right_tensor, device);
-  m_node_child_count_tensor = to_device(m_node_child_count_tensor, device);
+  m_node_lower_tensor = to_device(m_node_lower_tensor, device);
+  m_node_upper_tensor = to_device(m_node_upper_tensor, device);
   m_primitive_indices_tensor = to_device(m_primitive_indices_tensor, device);
   m_faces_tensor = to_device(m_faces_tensor, device);
   m_vertices_tensor = to_device(m_vertices_tensor, device);

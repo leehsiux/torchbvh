@@ -15,8 +15,28 @@ __device__ inline float3 load3(const float* base, int idx) {
   return make_float3(base[idx * 3 + 0], base[idx * 3 + 1], base[idx * 3 + 2]);
 }
 
+__device__ inline float4 load4(const float* base, int idx) {
+  return reinterpret_cast<const float4*>(base)[idx];
+}
+
 __device__ inline int3 load3i(const int32_t* base, int idx) {
   return make_int3(base[idx * 3 + 0], base[idx * 3 + 1], base[idx * 3 + 2]);
+}
+
+__device__ inline void load_node(
+    const float* node_lower,
+    const float* node_upper,
+    int idx,
+    float3* bmin,
+    float3* bmax,
+    int* left,
+    int* right) {
+  const float4 lo = load4(node_lower, idx);
+  const float4 hi = load4(node_upper, idx);
+  *bmin = make_float3(lo.x, lo.y, lo.z);
+  *bmax = make_float3(hi.x, hi.y, hi.z);
+  *left = __float_as_int(lo.w);
+  *right = __float_as_int(hi.w);
 }
 
 __device__ inline float point_aabb_dist2(
@@ -80,11 +100,8 @@ __device__ inline void sort4(float* scores, int* indices) {
 __global__ void point_mesh_query_kernel(
     const float* points,
     int64_t query_count,
-    const float* node_min,
-    const float* node_max,
-    const int32_t* node_left,
-    const int32_t* node_right,
-    const int32_t* node_child_count,
+    const float* node_lower,
+    const float* node_upper,
     const int32_t* primitive_indices,
     const int32_t* faces,
     const float* vertices,
@@ -113,16 +130,18 @@ __global__ void point_mesh_query_kernel(
     if (node_idx < 0 || node_idx >= node_count) {
       continue;
     }
-    const float3 bmin = load3(node_min, node_idx);
-    const float3 bmax = load3(node_max, node_idx);
+    float3 bmin;
+    float3 bmax;
+    int left = 0;
+    int right = 0;
+    load_node(node_lower, node_upper, node_idx, &bmin, &bmax, &left, &right);
     if (point_aabb_dist2(query, bmin, bmax) > best_dist2) {
       continue;
     }
 
-    const int child_count = node_child_count[node_idx];
-    if (child_count == 0) {
-      const int begin = max(0, -node_left[node_idx] - 1);
-      const int end = min(static_cast<int>(primitive_count), node_right[node_idx]);
+    if (left < 0) {
+      const int begin = max(0, -left - 1);
+      const int end = min(static_cast<int>(primitive_count), right);
       if (end < begin) {
         continue;
       }
@@ -152,14 +171,18 @@ __global__ void point_mesh_query_kernel(
 
     float scores[4] = {kInf, kInf, kInf, kInf};
     int children[4] = {-1, -1, -1, -1};
-    const int child_begin = node_left[node_idx];
-    for (int c = 0; c < child_count && c < 4; ++c) {
-      const int child_idx = child_begin + c;
+    const int child_begin = left;
+    const int child_end = min(right, child_begin + 4);
+    for (int child_idx = child_begin; child_idx < child_end; ++child_idx) {
+      const int c = child_idx - child_begin;
       if (child_idx < 0 || child_idx >= node_count) {
         continue;
       }
-      const float3 cbmin = load3(node_min, child_idx);
-      const float3 cbmax = load3(node_max, child_idx);
+      float3 cbmin;
+      float3 cbmax;
+      int child_left = 0;
+      int child_right = 0;
+      load_node(node_lower, node_upper, child_idx, &cbmin, &cbmax, &child_left, &child_right);
       scores[c] = point_aabb_dist2(query, cbmin, cbmax);
       children[c] = child_idx;
     }
@@ -191,11 +214,8 @@ __global__ void ray_mesh_query_kernel(
     const float* ray_origins,
     const float* ray_dirs,
     int64_t query_count,
-    const float* node_min,
-    const float* node_max,
-    const int32_t* node_left,
-    const int32_t* node_right,
-    const int32_t* node_child_count,
+    const float* node_lower,
+    const float* node_upper,
     const int32_t* primitive_indices,
     const int32_t* faces,
     const float* vertices,
@@ -228,17 +248,19 @@ __global__ void ray_mesh_query_kernel(
     if (node_idx < 0 || node_idx >= node_count) {
       continue;
     }
-    const float3 bmin = load3(node_min, node_idx);
-    const float3 bmax = load3(node_max, node_idx);
+    float3 bmin;
+    float3 bmax;
+    int left = 0;
+    int right = 0;
+    load_node(node_lower, node_upper, node_idx, &bmin, &bmax, &left, &right);
     float t_near = 0.0f;
     if (!ray_aabb_intersect(ray_o, inv_d, bmin, bmax, &t_near) || t_near > best_t) {
       continue;
     }
 
-    const int child_count = node_child_count[node_idx];
-    if (child_count == 0) {
-      const int begin = max(0, -node_left[node_idx] - 1);
-      const int end = min(static_cast<int>(primitive_count), node_right[node_idx]);
+    if (left < 0) {
+      const int begin = max(0, -left - 1);
+      const int end = min(static_cast<int>(primitive_count), right);
       if (end < begin) {
         continue;
       }
@@ -268,14 +290,18 @@ __global__ void ray_mesh_query_kernel(
 
     float scores[4] = {kInf, kInf, kInf, kInf};
     int children[4] = {-1, -1, -1, -1};
-    const int child_begin = node_left[node_idx];
-    for (int c = 0; c < child_count && c < 4; ++c) {
-      const int child_idx = child_begin + c;
+    const int child_begin = left;
+    const int child_end = min(right, child_begin + 4);
+    for (int child_idx = child_begin; child_idx < child_end; ++child_idx) {
+      const int c = child_idx - child_begin;
       if (child_idx < 0 || child_idx >= node_count) {
         continue;
       }
-      const float3 cbmin = load3(node_min, child_idx);
-      const float3 cbmax = load3(node_max, child_idx);
+      float3 cbmin;
+      float3 cbmax;
+      int child_left = 0;
+      int child_right = 0;
+      load_node(node_lower, node_upper, child_idx, &cbmin, &cbmax, &child_left, &child_right);
       float t_child_near = 0.0f;
       if (ray_aabb_intersect(ray_o, inv_d, cbmin, cbmax, &t_child_near)) {
         scores[c] = t_child_near;
@@ -314,11 +340,8 @@ __global__ void ray_mesh_query_kernel(
 
 torch::Tensor point_mesh_query_cuda(
     const torch::Tensor& points,
-    const torch::Tensor& node_min,
-    const torch::Tensor& node_max,
-    const torch::Tensor& node_left,
-    const torch::Tensor& node_right,
-    const torch::Tensor& node_child_count,
+    const torch::Tensor& node_lower,
+    const torch::Tensor& node_upper,
     const torch::Tensor& primitive_indices,
     const torch::Tensor& faces,
     const torch::Tensor& vertices) {
@@ -334,15 +357,12 @@ torch::Tensor point_mesh_query_cuda(
   point_mesh_query_kernel<<<blocks, threads, 0, stream>>>(
       points.data_ptr<float>(),
       q,
-      node_min.data_ptr<float>(),
-      node_max.data_ptr<float>(),
-      node_left.data_ptr<int32_t>(),
-      node_right.data_ptr<int32_t>(),
-      node_child_count.data_ptr<int32_t>(),
+      node_lower.data_ptr<float>(),
+      node_upper.data_ptr<float>(),
       primitive_indices.data_ptr<int32_t>(),
       faces.data_ptr<int32_t>(),
       vertices.data_ptr<float>(),
-      static_cast<int32_t>(node_left.size(0)),
+      static_cast<int32_t>(node_lower.size(0)),
       static_cast<int32_t>(primitive_indices.size(0)),
       static_cast<int32_t>(faces.size(0)),
       static_cast<int32_t>(vertices.size(0)),
@@ -354,11 +374,8 @@ torch::Tensor point_mesh_query_cuda(
 torch::Tensor ray_mesh_query_cuda(
     const torch::Tensor& ray_origins,
     const torch::Tensor& ray_dirs,
-    const torch::Tensor& node_min,
-    const torch::Tensor& node_max,
-    const torch::Tensor& node_left,
-    const torch::Tensor& node_right,
-    const torch::Tensor& node_child_count,
+    const torch::Tensor& node_lower,
+    const torch::Tensor& node_upper,
     const torch::Tensor& primitive_indices,
     const torch::Tensor& faces,
     const torch::Tensor& vertices) {
@@ -375,15 +392,12 @@ torch::Tensor ray_mesh_query_cuda(
       ray_origins.data_ptr<float>(),
       ray_dirs.data_ptr<float>(),
       q,
-      node_min.data_ptr<float>(),
-      node_max.data_ptr<float>(),
-      node_left.data_ptr<int32_t>(),
-      node_right.data_ptr<int32_t>(),
-      node_child_count.data_ptr<int32_t>(),
+      node_lower.data_ptr<float>(),
+      node_upper.data_ptr<float>(),
       primitive_indices.data_ptr<int32_t>(),
       faces.data_ptr<int32_t>(),
       vertices.data_ptr<float>(),
-      static_cast<int32_t>(node_left.size(0)),
+      static_cast<int32_t>(node_lower.size(0)),
       static_cast<int32_t>(primitive_indices.size(0)),
       static_cast<int32_t>(faces.size(0)),
       static_cast<int32_t>(vertices.size(0)),
