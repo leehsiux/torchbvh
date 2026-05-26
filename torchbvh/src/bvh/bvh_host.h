@@ -1,13 +1,6 @@
 #pragma once
 
-#if __has_include(<Eigen/Core>)
 #include <Eigen/Core>
-#elif __has_include(<eigen3/Eigen/Core>)
-#include <eigen3/Eigen/Core>
-#else
-#error "Eigen/Core not found. Install Eigen headers."
-#endif
-
 #include <algorithm>
 #include <array>
 #include <cfloat>
@@ -126,18 +119,46 @@ inline BVHNode4* build_bvh4_recursive(
     return node;
   }
 
-  std::sort(
-      primitive_ids.begin() + begin,
-      primitive_ids.begin() + end,
-      [&](int lhs_id, int rhs_id) {
-        return primitives[lhs_id].centroid()[axis] < primitives[rhs_id].centroid()[axis];
-      });
+  auto centroid_less = [&](int lhs_id, int rhs_id) {
+    return primitives[lhs_id].centroid()[axis] < primitives[rhs_id].centroid()[axis];
+  };
 
-  const int child_count = std::min(4, count);
+  // Warp's fast builders avoid full range sorting at every node; similarly we
+  // use 3-way partitioning via nth_element for BVH4 split points to reduce
+  // build cost from repeated O(n log n) sorts.
+  int split0 = begin;
+  int split1 = begin + count / 4;
+  int split2 = begin + count / 2;
+  int split3 = begin + (count * 3) / 4;
+  int split4 = end;
+
+  if (split2 > split0 && split2 < split4) {
+    std::nth_element(
+        primitive_ids.begin() + split0,
+        primitive_ids.begin() + split2,
+        primitive_ids.begin() + split4,
+        centroid_less);
+  }
+  if (split1 > split0 && split1 < split2) {
+    std::nth_element(
+        primitive_ids.begin() + split0,
+        primitive_ids.begin() + split1,
+        primitive_ids.begin() + split2,
+        centroid_less);
+  }
+  if (split3 > split2 && split3 < split4) {
+    std::nth_element(
+        primitive_ids.begin() + split2,
+        primitive_ids.begin() + split3,
+        primitive_ids.begin() + split4,
+        centroid_less);
+  }
+
+  const std::array<int, 5> split = {split0, split1, split2, split3, split4};
   int created_children = 0;
-  for (int i = 0; i < child_count; ++i) {
-    const int child_begin = begin + (count * i) / child_count;
-    const int child_end = begin + (count * (i + 1)) / child_count;
+  for (int i = 0; i < 4; ++i) {
+    const int child_begin = split[i];
+    const int child_end = split[i + 1];
     if (child_end <= child_begin) {
       continue;
     }

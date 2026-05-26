@@ -24,13 +24,13 @@ void check_shape1(const torch::Tensor& t, const char* name) {
   TORCH_CHECK(t.dim() == 1, name, " must be rank-1.");
 }
 
-Eigen::MatrixXd to_eigen_vertices(const torch::Tensor& vertices_cpu_f64) {
-  Eigen::MatrixXd out(vertices_cpu_f64.size(0), 3);
-  const double* ptr = vertices_cpu_f64.data_ptr<double>();
-  for (int64_t i = 0; i < vertices_cpu_f64.size(0); ++i) {
-    out(i, 0) = ptr[i * 3 + 0];
-    out(i, 1) = ptr[i * 3 + 1];
-    out(i, 2) = ptr[i * 3 + 2];
+Eigen::MatrixXd to_eigen_vertices(const torch::Tensor& vertices_cpu_f32) {
+  Eigen::MatrixXd out(vertices_cpu_f32.size(0), 3);
+  const float* ptr = vertices_cpu_f32.data_ptr<float>();
+  for (int64_t i = 0; i < vertices_cpu_f32.size(0); ++i) {
+    out(i, 0) = static_cast<double>(ptr[i * 3 + 0]);
+    out(i, 1) = static_cast<double>(ptr[i * 3 + 1]);
+    out(i, 2) = static_cast<double>(ptr[i * 3 + 2]);
   }
   return out;
 }
@@ -57,7 +57,7 @@ std::vector<torch::Tensor> build_bvh_tensors(
   TORCH_CHECK(max_leaf_size > 0, "max_leaf_size must be > 0.");
 
   auto vertices_cpu =
-      vertices.to(torch::kCPU, torch::kFloat64, false, true).contiguous();
+      vertices.to(torch::kCPU, torch::kFloat32, false, true).contiguous();
   auto faces_cpu = faces.to(torch::kCPU, torch::kInt32, false, true).contiguous();
   const Eigen::MatrixXd eigen_vertices = to_eigen_vertices(vertices_cpu);
   const Eigen::MatrixXi eigen_faces = to_eigen_faces(faces_cpu);
@@ -135,6 +135,38 @@ std::shared_ptr<BVHBinding> build_bvh_binding(
     const torch::Tensor& faces,
     int64_t max_leaf_size) {
   return std::make_shared<BVHBinding>(build_bvh_tensors(vertices, faces, max_leaf_size));
+}
+
+std::shared_ptr<BVHBinding> build_bvh_from_tensors(
+    const torch::Tensor& node_lower,
+    const torch::Tensor& node_upper,
+    const torch::Tensor& primitive_indices,
+    const torch::Tensor& faces,
+    const torch::Tensor& vertices) {
+  TORCH_CHECK(node_lower.is_cuda(), "node_lower must be CUDA tensor.");
+  TORCH_CHECK(node_upper.is_cuda(), "node_upper must be CUDA tensor.");
+  TORCH_CHECK(primitive_indices.is_cuda(), "primitive_indices must be CUDA tensor.");
+  TORCH_CHECK(faces.is_cuda(), "faces must be CUDA tensor.");
+  TORCH_CHECK(vertices.is_cuda(), "vertices must be CUDA tensor.");
+  TORCH_CHECK(node_lower.is_contiguous(), "node_lower must be contiguous.");
+  TORCH_CHECK(node_upper.is_contiguous(), "node_upper must be contiguous.");
+  TORCH_CHECK(primitive_indices.is_contiguous(), "primitive_indices must be contiguous.");
+  TORCH_CHECK(faces.is_contiguous(), "faces must be contiguous.");
+  TORCH_CHECK(vertices.is_contiguous(), "vertices must be contiguous.");
+  TORCH_CHECK(node_lower.scalar_type() == torch::kFloat32, "node_lower must be float32.");
+  TORCH_CHECK(node_upper.scalar_type() == torch::kFloat32, "node_upper must be float32.");
+  TORCH_CHECK(primitive_indices.scalar_type() == torch::kInt32, "primitive_indices must be int32.");
+  TORCH_CHECK(faces.scalar_type() == torch::kInt32, "faces must be int32.");
+  TORCH_CHECK(vertices.scalar_type() == torch::kFloat32, "vertices must be float32.");
+  TORCH_CHECK(node_lower.dim() == 2 && node_lower.size(1) == 4, "node_lower must be [N,4].");
+  TORCH_CHECK(node_upper.dim() == 2 && node_upper.size(1) == 4, "node_upper must be [N,4].");
+  TORCH_CHECK(node_upper.size(0) == node_lower.size(0), "node_upper rows mismatch.");
+  TORCH_CHECK(primitive_indices.dim() == 1, "primitive_indices must be rank-1.");
+  TORCH_CHECK(faces.dim() == 2 && faces.size(1) == 3, "faces must be [F,3].");
+  TORCH_CHECK(vertices.dim() == 2 && vertices.size(1) == 3, "vertices must be [V,3].");
+
+  std::vector<torch::Tensor> tensors = {node_lower, node_upper, primitive_indices, faces, vertices};
+  return std::make_shared<BVHBinding>(std::move(tensors));
 }
 
 torch::Tensor point_mesh_query(
@@ -263,4 +295,12 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       .def_property_readonly("vertices", [](const thbvh::BVHBinding& self) { return self.vertices; });
 
   m.def("build_bvh", &thbvh::build_bvh_binding, py::arg("vertices"), py::arg("faces"), py::arg("max_leaf_size") = 8);
+  m.def(
+      "build_bvh_from_tensors",
+      &thbvh::build_bvh_from_tensors,
+      py::arg("node_lower"),
+      py::arg("node_upper"),
+      py::arg("primitive_indices"),
+      py::arg("faces"),
+      py::arg("vertices"));
 }

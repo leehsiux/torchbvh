@@ -27,7 +27,8 @@ ext_modules = [
         include_dirs=include_dirs,
         extra_compile_args={
             "cxx": ["-O3", "-std=c++17"],
-            "nvcc": ["-O3", "--use_fast_math", "-lineinfo"],
+            # Avoid fast-math to preserve query precision fidelity.
+            "nvcc": ["-O3", "-lineinfo"],
         },
     )
 ]
