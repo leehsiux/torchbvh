@@ -48,3 +48,7 @@ def point_mesh_query(points: torch.Tensor, bvh: BVH):
 
 def ray_mesh_query(ray_origins: torch.Tensor, ray_dirs: torch.Tensor, bvh: BVH):
     return bvh.ray_query(ray_origins, ray_dirs)
+
+
+def box_overlap_query(box_lower: torch.Tensor, box_upper: torch.Tensor, bvh: BVH):
+    return bvh.box_overlap_query(box_lower, box_upper)

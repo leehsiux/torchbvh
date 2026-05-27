@@ -611,7 +611,7 @@ std::vector<torch::Tensor> box_overlap_query_cuda(
 
   auto offsets_tail = counts.cumsum(0, torch::kInt64);
   auto offsets = torch::cat({zero, offsets_tail}, 0);
-  const int64_t total = offsets[-1].item<int64_t>();
+  const int64_t total = offsets.index({q}).item<int64_t>();
   auto indices = torch::empty({total}, box_lower.options().dtype(torch::kInt64));
   if (total == 0) {
     return {offsets, indices};

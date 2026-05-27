@@ -94,6 +94,15 @@ torch::Tensor ray_mesh_query(
     const torch::Tensor& faces,
     const torch::Tensor& vertices);
 
+std::vector<torch::Tensor> box_overlap_query(
+    const torch::Tensor& box_lower,
+    const torch::Tensor& box_upper,
+    const torch::Tensor& node_lower,
+    const torch::Tensor& node_upper,
+    const torch::Tensor& primitive_indices,
+    const torch::Tensor& faces,
+    const torch::Tensor& vertices);
+
 struct BVHBinding {
   explicit BVHBinding(std::vector<torch::Tensor> tensors)
       : node_lower(std::move(tensors[0])),
@@ -116,6 +125,19 @@ struct BVHBinding {
     return ray_mesh_query(
         ray_origins,
         ray_dirs,
+        node_lower,
+        node_upper,
+        primitive_indices,
+        faces,
+        vertices);
+  }
+
+  std::vector<torch::Tensor> box_overlap_query(
+      const torch::Tensor& box_lower,
+      const torch::Tensor& box_upper) const {
+    return thbvh::box_overlap_query(
+        box_lower,
+        box_upper,
         node_lower,
         node_upper,
         primitive_indices,
@@ -255,6 +277,50 @@ torch::Tensor ray_mesh_query(
       vertices);
 }
 
+std::vector<torch::Tensor> box_overlap_query(
+    const torch::Tensor& box_lower,
+    const torch::Tensor& box_upper,
+    const torch::Tensor& node_lower,
+    const torch::Tensor& node_upper,
+    const torch::Tensor& primitive_indices,
+    const torch::Tensor& faces,
+    const torch::Tensor& vertices) {
+  check_cuda_contiguous(box_lower, "box_lower");
+  check_cuda_contiguous(box_upper, "box_upper");
+  check_cuda_contiguous(node_lower, "node_lower");
+  check_cuda_contiguous(node_upper, "node_upper");
+  check_cuda_contiguous(primitive_indices, "primitive_indices");
+  check_cuda_contiguous(faces, "faces");
+  check_cuda_contiguous(vertices, "vertices");
+
+  TORCH_CHECK(box_lower.scalar_type() == torch::kFloat32, "box_lower must be float32.");
+  TORCH_CHECK(box_upper.scalar_type() == torch::kFloat32, "box_upper must be float32.");
+  TORCH_CHECK(node_lower.scalar_type() == torch::kFloat32, "node_lower must be float32.");
+  TORCH_CHECK(node_upper.scalar_type() == torch::kFloat32, "node_upper must be float32.");
+  TORCH_CHECK(primitive_indices.scalar_type() == torch::kInt32, "primitive_indices must be int32.");
+  TORCH_CHECK(faces.scalar_type() == torch::kInt32, "faces must be int32.");
+  TORCH_CHECK(vertices.scalar_type() == torch::kFloat32, "vertices must be float32.");
+
+  check_shape2(box_lower, 3, "box_lower");
+  check_shape2(box_upper, 3, "box_upper");
+  check_shape2(node_lower, 4, "node_lower");
+  check_shape2(node_upper, 4, "node_upper");
+  check_shape2(faces, 3, "faces");
+  check_shape2(vertices, 3, "vertices");
+  check_shape1(primitive_indices, "primitive_indices");
+  TORCH_CHECK(box_lower.size(0) == box_upper.size(0), "box_lower/box_upper rows mismatch.");
+  TORCH_CHECK(node_upper.size(0) == node_lower.size(0), "node_upper rows mismatch.");
+
+  return box_overlap_query_cuda(
+      box_lower,
+      box_upper,
+      node_lower,
+      node_upper,
+      primitive_indices,
+      faces,
+      vertices);
+}
+
 }  // namespace thbvh
 
 TORCH_LIBRARY(torchbvh, m) {
@@ -265,6 +331,9 @@ TORCH_LIBRARY(torchbvh, m) {
   m.def(
       "ray_mesh_query(Tensor ray_origins, Tensor ray_dirs, Tensor node_lower, Tensor node_upper, "
       "Tensor primitive_indices, Tensor faces, Tensor vertices) -> Tensor");
+  m.def(
+      "box_overlap_query(Tensor box_lower, Tensor box_upper, Tensor node_lower, Tensor node_upper, "
+      "Tensor primitive_indices, Tensor faces, Tensor vertices) -> Tensor[]");
 }
 
 TORCH_LIBRARY_IMPL(torchbvh, CPU, m) {
@@ -275,6 +344,7 @@ TORCH_LIBRARY_IMPL(torchbvh, CUDA, m) {
   m.impl("build_bvh", &thbvh::build_bvh_tensors);
   m.impl("point_mesh_query", &thbvh::point_mesh_query);
   m.impl("ray_mesh_query", &thbvh::ray_mesh_query);
+  m.impl("box_overlap_query", &thbvh::box_overlap_query);
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
@@ -282,6 +352,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   py::class_<thbvh::BVHBinding, std::shared_ptr<thbvh::BVHBinding>>(m, "BVH")
       .def("query", &thbvh::BVHBinding::query)
       .def("ray_query", &thbvh::BVHBinding::ray_query)
+      .def("box_overlap_query", &thbvh::BVHBinding::box_overlap_query)
       .def_property_readonly(
           "node_lower",
           [](const thbvh::BVHBinding& self) { return self.node_lower; })

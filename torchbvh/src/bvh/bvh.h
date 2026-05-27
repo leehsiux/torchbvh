@@ -2,6 +2,8 @@
 
 #include <torch/torch.h>
 
+#include <vector>
+
 #include "bvh/bvh_host.h"
 
 namespace thbvh {
