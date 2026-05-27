@@ -21,8 +21,8 @@ ext_modules = [
         name="torchbvh._C",
         sources=[
             str(ROOT / "torchbvh" / "src" / "bvh" / "bvh.cpp"),
-            str(ROOT / "torchbvh" / "src" / "bvh" / "torchbvh_ops.cpp"),
-            str(ROOT / "torchbvh" / "src" / "bvh" / "bvh_queries.cu"),
+            str(ROOT / "torchbvh" / "src" / "bvh" / "bindings.cpp"),
+            str(ROOT / "torchbvh" / "src" / "bvh" / "bvh_device.cu"),
         ],
         include_dirs=include_dirs,
         extra_compile_args={

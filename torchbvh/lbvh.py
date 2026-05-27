@@ -1,10 +1,6 @@
-from __future__ import annotations
-
 import math
-from importlib import import_module
-
 import torch
-
+from . import _C
 
 def _expand_bits(v: torch.Tensor) -> torch.Tensor:
     # 10-bit input -> 30-bit interleaved output.
@@ -29,7 +25,6 @@ def _pack_i32_bits_to_f32(x: torch.Tensor) -> torch.Tensor:
 
 
 def build_bvh_gpu_lbvh(vertices: torch.Tensor, faces: torch.Tensor, max_leaf_size: int = 8):
-    _C = import_module("torchbvh._C")
     if not vertices.is_cuda or not faces.is_cuda:
         raise RuntimeError("GPU LBVH requires CUDA tensors for vertices and faces.")
     if vertices.dtype != torch.float32 or faces.dtype != torch.int32:

@@ -49,6 +49,28 @@ __device__ inline float point_aabb_dist2(
   return dx * dx + dy * dy + dz * dz;
 }
 
+__device__ inline bool aabb_overlap(const float3 amin, const float3 amax, const float3 bmin, const float3 bmax) {
+  return amin.x <= bmax.x && amax.x >= bmin.x && amin.y <= bmax.y && amax.y >= bmin.y &&
+         amin.z <= bmax.z && amax.z >= bmin.z;
+}
+
+__device__ inline bool triangle_aabb_overlap(
+    const float3 qmin,
+    const float3 qmax,
+    const float3 a,
+    const float3 b,
+    const float3 c) {
+  const float3 tmin = make_float3(
+      fminf(a.x, fminf(b.x, c.x)),
+      fminf(a.y, fminf(b.y, c.y)),
+      fminf(a.z, fminf(b.z, c.z)));
+  const float3 tmax = make_float3(
+      fmaxf(a.x, fmaxf(b.x, c.x)),
+      fmaxf(a.y, fmaxf(b.y, c.y)),
+      fmaxf(a.z, fmaxf(b.z, c.z)));
+  return aabb_overlap(qmin, qmax, tmin, tmax);
+}
+
 __device__ inline bool ray_aabb_intersect(
     const float3 ray_o,
     const float3 inv_d,
@@ -336,6 +358,153 @@ __global__ void ray_mesh_query_kernel(
   out[out_offset + 8] = hit_point.z;
 }
 
+__global__ void box_overlap_count_kernel(
+    const float* box_lower,
+    const float* box_upper,
+    int64_t query_count,
+    const float* node_lower,
+    const float* node_upper,
+    const int32_t* primitive_indices,
+    const int32_t* faces,
+    const float* vertices,
+    int32_t node_count,
+    int32_t primitive_count,
+    int32_t face_count,
+    int32_t vertex_count,
+    int64_t* counts) {
+  const int idx = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
+  if (idx >= query_count) {
+    return;
+  }
+
+  const float3 qmin = load3(box_lower, idx);
+  const float3 qmax = load3(box_upper, idx);
+  int64_t count = 0;
+
+  int stack[kStackSize];
+  int stack_size = 0;
+  stack[stack_size++] = 0;
+
+  while (stack_size > 0) {
+    const int node_idx = stack[--stack_size];
+    if (node_idx < 0 || node_idx >= node_count) {
+      continue;
+    }
+    float3 bmin;
+    float3 bmax;
+    int left = 0;
+    int right = 0;
+    load_node(node_lower, node_upper, node_idx, &bmin, &bmax, &left, &right);
+    if (!aabb_overlap(qmin, qmax, bmin, bmax)) {
+      continue;
+    }
+
+    if (left < 0) {
+      const int begin = max(0, -left - 1);
+      const int end = min(static_cast<int>(primitive_count), right);
+      for (int p = begin; p < end; ++p) {
+        const int primitive_id = primitive_indices[p];
+        if (primitive_id < 0 || primitive_id >= face_count) {
+          continue;
+        }
+        const int3 tri = load3i(faces, primitive_id);
+        if (tri.x < 0 || tri.y < 0 || tri.z < 0 || tri.x >= vertex_count || tri.y >= vertex_count ||
+            tri.z >= vertex_count) {
+          continue;
+        }
+        if (triangle_aabb_overlap(qmin, qmax, load3(vertices, tri.x), load3(vertices, tri.y), load3(vertices, tri.z))) {
+          ++count;
+        }
+      }
+      continue;
+    }
+
+    const int child_begin = left;
+    const int child_end = min(right, child_begin + 4);
+    for (int child_idx = child_end - 1; child_idx >= child_begin; --child_idx) {
+      if (child_idx >= 0 && child_idx < node_count && stack_size < kStackSize) {
+        stack[stack_size++] = child_idx;
+      }
+    }
+  }
+
+  counts[idx] = count;
+}
+
+__global__ void box_overlap_fill_kernel(
+    const float* box_lower,
+    const float* box_upper,
+    int64_t query_count,
+    const float* node_lower,
+    const float* node_upper,
+    const int32_t* primitive_indices,
+    const int32_t* faces,
+    const float* vertices,
+    int32_t node_count,
+    int32_t primitive_count,
+    int32_t face_count,
+    int32_t vertex_count,
+    const int64_t* offsets,
+    int64_t* indices) {
+  const int idx = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
+  if (idx >= query_count) {
+    return;
+  }
+
+  const float3 qmin = load3(box_lower, idx);
+  const float3 qmax = load3(box_upper, idx);
+  int64_t write = offsets[idx];
+  const int64_t write_end = offsets[idx + 1];
+
+  int stack[kStackSize];
+  int stack_size = 0;
+  stack[stack_size++] = 0;
+
+  while (stack_size > 0) {
+    const int node_idx = stack[--stack_size];
+    if (node_idx < 0 || node_idx >= node_count) {
+      continue;
+    }
+    float3 bmin;
+    float3 bmax;
+    int left = 0;
+    int right = 0;
+    load_node(node_lower, node_upper, node_idx, &bmin, &bmax, &left, &right);
+    if (!aabb_overlap(qmin, qmax, bmin, bmax)) {
+      continue;
+    }
+
+    if (left < 0) {
+      const int begin = max(0, -left - 1);
+      const int end = min(static_cast<int>(primitive_count), right);
+      for (int p = begin; p < end; ++p) {
+        const int primitive_id = primitive_indices[p];
+        if (primitive_id < 0 || primitive_id >= face_count) {
+          continue;
+        }
+        const int3 tri = load3i(faces, primitive_id);
+        if (tri.x < 0 || tri.y < 0 || tri.z < 0 || tri.x >= vertex_count || tri.y >= vertex_count ||
+            tri.z >= vertex_count) {
+          continue;
+        }
+        if (triangle_aabb_overlap(qmin, qmax, load3(vertices, tri.x), load3(vertices, tri.y), load3(vertices, tri.z)) &&
+            write < write_end) {
+          indices[write++] = static_cast<int64_t>(primitive_id);
+        }
+      }
+      continue;
+    }
+
+    const int child_begin = left;
+    const int child_end = min(right, child_begin + 4);
+    for (int child_idx = child_end - 1; child_idx >= child_begin; --child_idx) {
+      if (child_idx >= 0 && child_idx < node_count && stack_size < kStackSize) {
+        stack[stack_size++] = child_idx;
+      }
+    }
+  }
+}
+
 }  // namespace
 
 torch::Tensor point_mesh_query_cuda(
@@ -404,6 +573,67 @@ torch::Tensor ray_mesh_query_cuda(
       out.data_ptr<float>());
   C10_CUDA_KERNEL_LAUNCH_CHECK();
   return out;
+}
+
+std::vector<torch::Tensor> box_overlap_query_cuda(
+    const torch::Tensor& box_lower,
+    const torch::Tensor& box_upper,
+    const torch::Tensor& node_lower,
+    const torch::Tensor& node_upper,
+    const torch::Tensor& primitive_indices,
+    const torch::Tensor& faces,
+    const torch::Tensor& vertices) {
+  const int64_t q = box_lower.size(0);
+  auto counts = torch::zeros({q}, box_lower.options().dtype(torch::kInt64));
+  auto zero = torch::zeros({1}, box_lower.options().dtype(torch::kInt64));
+  if (q == 0) {
+    return {zero, counts};
+  }
+
+  const int threads = 256;
+  const int blocks = static_cast<int>((q + threads - 1) / threads);
+  cudaStream_t stream = at::cuda::getDefaultCUDAStream();
+  box_overlap_count_kernel<<<blocks, threads, 0, stream>>>(
+      box_lower.data_ptr<float>(),
+      box_upper.data_ptr<float>(),
+      q,
+      node_lower.data_ptr<float>(),
+      node_upper.data_ptr<float>(),
+      primitive_indices.data_ptr<int32_t>(),
+      faces.data_ptr<int32_t>(),
+      vertices.data_ptr<float>(),
+      static_cast<int32_t>(node_lower.size(0)),
+      static_cast<int32_t>(primitive_indices.size(0)),
+      static_cast<int32_t>(faces.size(0)),
+      static_cast<int32_t>(vertices.size(0)),
+      counts.data_ptr<int64_t>());
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+
+  auto offsets_tail = counts.cumsum(0, torch::kInt64);
+  auto offsets = torch::cat({zero, offsets_tail}, 0);
+  const int64_t total = offsets[-1].item<int64_t>();
+  auto indices = torch::empty({total}, box_lower.options().dtype(torch::kInt64));
+  if (total == 0) {
+    return {offsets, indices};
+  }
+
+  box_overlap_fill_kernel<<<blocks, threads, 0, stream>>>(
+      box_lower.data_ptr<float>(),
+      box_upper.data_ptr<float>(),
+      q,
+      node_lower.data_ptr<float>(),
+      node_upper.data_ptr<float>(),
+      primitive_indices.data_ptr<int32_t>(),
+      faces.data_ptr<int32_t>(),
+      vertices.data_ptr<float>(),
+      static_cast<int32_t>(node_lower.size(0)),
+      static_cast<int32_t>(primitive_indices.size(0)),
+      static_cast<int32_t>(faces.size(0)),
+      static_cast<int32_t>(vertices.size(0)),
+      offsets.data_ptr<int64_t>(),
+      indices.data_ptr<int64_t>());
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+  return {offsets, indices};
 }
 
 }  // namespace thbvh

@@ -79,18 +79,12 @@ def list_glb_files(root: Path, extra_glob: str, max_meshes: int) -> list[Path]:
 
 
 def load_mesh(path: Path) -> trimesh.Trimesh:
-    loaded = trimesh.load(path, force="scene")
-    if isinstance(loaded, trimesh.Scene):
-        mesh = loaded.dump(concatenate=True)
-    elif isinstance(loaded, trimesh.Trimesh):
-        mesh = loaded
-    else:
-        raise RuntimeError(f"Unsupported mesh type: {type(loaded)}")
-    if mesh.faces.shape[1] != 3:
-        mesh = mesh.triangulate()
-    if mesh.faces.size == 0 or mesh.vertices.size == 0:
+    loaded = trimesh.load_mesh(path)
+    if loaded.faces.shape[1] != 3:
+        loaded = loaded.triangulate()
+    if loaded.faces.size == 0 or loaded.vertices.size == 0:
         raise RuntimeError("Empty mesh")
-    return mesh
+    return loaded
 
 
 def normalize_mesh(mesh: trimesh.Trimesh) -> tuple[np.ndarray, np.ndarray]:

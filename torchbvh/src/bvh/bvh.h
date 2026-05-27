@@ -60,4 +60,13 @@ torch::Tensor ray_mesh_query_cuda(
     const torch::Tensor& faces,
     const torch::Tensor& vertices);
 
+std::vector<torch::Tensor> box_overlap_query_cuda(
+    const torch::Tensor& box_lower,
+    const torch::Tensor& box_upper,
+    const torch::Tensor& node_lower,
+    const torch::Tensor& node_upper,
+    const torch::Tensor& primitive_indices,
+    const torch::Tensor& faces,
+    const torch::Tensor& vertices);
+
 }  // namespace thbvh

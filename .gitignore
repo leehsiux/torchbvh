@@ -80,3 +80,5 @@ dmypy.json
 
 # Test/build artifacts
 *.log
+
+.cursor/
